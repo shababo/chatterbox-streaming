@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import librosa
 import torch
@@ -212,6 +213,11 @@ class ChatterboxTTS:
         exaggeration=0.5,
         cfg_weight=0.5,
         temperature=0.8,
+        # stream
+        tokens_per_slice=1000,
+        remove_milliseconds=45,
+        remove_milliseconds_start=25,
+        chunk_overlap_method: Literal["zero", "full"] = "zero",
     ):
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
@@ -240,24 +246,107 @@ class ChatterboxTTS:
         text_tokens = F.pad(text_tokens, (0, 1), value=eot)
 
         with torch.inference_mode():
-            speech_tokens = self.t3.inference(
-                t3_cond=self.conds.t3,
-                text_tokens=text_tokens,
-                max_new_tokens=1000,  # TODO: use the value in config
-                temperature=temperature,
-                cfg_weight=cfg_weight,
-            )
-            # Extract only the conditional batch.
-            speech_tokens = speech_tokens[0]
 
-            # TODO: output becomes 1D
-            speech_tokens = drop_invalid_tokens(speech_tokens)
-            speech_tokens = speech_tokens.to(self.device)
+            def _t3_infer():
+                for token in self.t3.inference(
+                    t3_cond=self.conds.t3,
+                    text_tokens=text_tokens,
+                    max_new_tokens=1000,  # TODO: use the value in config
+                    temperature=temperature,
+                    cfg_weight=cfg_weight,
+                ):
+                    yield token
+            
+            def speech_to_wav(speech_tokens, previous_length=0):
+                # Extract only the conditional batch.
+                speech_tokens = speech_tokens[0]
 
-            wav, _ = self.s3gen.inference(
-                speech_tokens=speech_tokens,
-                ref_dict=self.conds.gen,
-            )
-            wav = wav.squeeze(0).detach().cpu().numpy()
-            watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
-        return torch.from_numpy(watermarked_wav).unsqueeze(0)
+                # speech_tokens = speech_tokens[-tokens_per_slice * 2:]
+
+                # TODO: output becomes 1D
+                speech_tokens = drop_invalid_tokens(speech_tokens)
+                speech_tokens = speech_tokens.to(self.device)
+
+                wav, _ = self.s3gen.inference(
+                    speech_tokens=speech_tokens,
+                    ref_dict=self.conds.gen,
+                    no_trim=tokens_per_slice < 1000,
+                )
+                wav = wav.squeeze(0).detach().cpu().numpy()
+
+                if chunk_overlap_method == "full":
+                    wav = wav[previous_length:]
+                
+                watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
+                if remove_milliseconds > 0:
+                    watermarked_wav = watermarked_wav[:-int(self.sr * remove_milliseconds / 1000)]
+                if remove_milliseconds_start > 0:
+                    watermarked_wav = watermarked_wav[int(self.sr * remove_milliseconds_start / 1000):]
+
+                return torch.from_numpy(watermarked_wav).unsqueeze(0), len(wav) + previous_length
+
+                tokens_to_seconds = int(288960 * stride / 300)
+                new_wav_stride = wav[-tokens_to_seconds:]
+                if previous_wav_stride is not None:
+                # if False:
+                    import numpy as np
+                    blended_tokens = min(tokens_to_seconds // 2, len(watermarked_wav), len(previous_wav_stride))
+
+                    fade_in = np.linspace(0, 1, blended_tokens, endpoint=False)
+                    fade_out = 1 - fade_in  # goes from 1 → 0
+
+                    # Get segments to blend
+                    prev_tail = previous_wav_stride[-blended_tokens:]
+                    curr_head = watermarked_wav[:blended_tokens]
+
+                    # Apply crossfade
+                    crossfaded = prev_tail * fade_out + curr_head * fade_in
+
+                    # Replace the start of current audio with the crossfade
+                    watermarked_wav = np.concatenate([
+                        crossfaded,
+                        watermarked_wav[blended_tokens:]
+                    ])
+                watermarked_wav = watermarked_wav[:-tokens_to_seconds]
+                print("watermarked_wav", watermarked_wav.shape)
+                return torch.from_numpy(watermarked_wav).unsqueeze(0), new_wav_stride
+            
+            eos_token = torch.tensor([self.t3.hp.stop_text_token]).unsqueeze(0).to(self.device)
+
+            def chunked():
+                """Yield successive chunks of tokens from the inference generator."""
+                token_stream = []
+                for batch in _t3_infer():
+                    token_stream.extend(batch.squeeze(0))
+                    
+                    while len(token_stream) >= tokens_per_slice:
+                        yield token_stream[:tokens_per_slice]
+                        token_stream = token_stream[tokens_per_slice:]
+                
+                # Yield any remaining tokens
+                if token_stream:
+                    yield token_stream
+
+            def accumulating_chunks():
+                """Yield accumulating slices of tokens, emitting every tokens_per_slice tokens."""
+                accumulated = []
+                
+                for batch in _t3_infer():
+                    accumulated.extend(batch.squeeze(0))
+                    
+                    # Yield whenever we have a multiple of tokens_per_slice tokens
+                    if len(accumulated) % tokens_per_slice == 0 and len(accumulated) > 0:
+                        yield accumulated.copy()
+                
+                # Yield any remaining tokens if not already yielded
+                if accumulated and len(accumulated) % tokens_per_slice != 0:
+                    yield accumulated.copy()
+
+
+            previous_length = 0
+            iterator = chunked() if chunk_overlap_method == "zero" else accumulating_chunks()
+            for slice_tokens in iterator:
+                tokens = torch.stack(slice_tokens).unsqueeze(0)
+                tokens_with_eos = torch.cat([tokens, eos_token], dim=1)
+                wav, previous_length = speech_to_wav(tokens_with_eos, previous_length)
+                yield wav
