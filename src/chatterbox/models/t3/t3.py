@@ -327,7 +327,6 @@ class T3(nn.Module):
             inputs_embeds=inputs_embeds,
             past_key_values=None,
             use_cache=True,
-            # output_attentions=True,
             output_attentions=False,
             output_hidden_states=True,
             return_dict=True,
@@ -362,7 +361,6 @@ class T3(nn.Module):
             predicted.append(next_token)
             generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
-
             # Check for EOS token.
             if next_token.view(-1) == self.hp.stop_speech_token:
                 break
@@ -379,8 +377,6 @@ class T3(nn.Module):
             output = self.patched_model(
                 inputs_embeds=next_token_embed,
                 past_key_values=past,
-                # output_attentions=True,
-                # Let's see
                 output_attentions=False,
                 output_hidden_states=True,
                 return_dict=True,
