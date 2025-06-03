@@ -2,9 +2,8 @@ from typing import Optional
 
 import torch
 from torch import nn as nn
-from transformers import LlamaConfig, LlamaModel, LlamaPreTrainedModel, GenerationMixin
+from transformers import LlamaConfig, LlamaModel, LlamaPreTrainedModel, GenerationMixin, DynamicCache
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
-
 
 class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
     """
@@ -94,7 +93,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
 
         tfmr_out = self.model(
             inputs_embeds=inputs_embeds,
-            past_key_values=past_key_values,
+            past_key_values=DynamicCache.from_legacy_cache(past_key_values),
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
