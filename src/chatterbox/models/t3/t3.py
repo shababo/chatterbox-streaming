@@ -7,7 +7,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from transformers import LlamaModel, LlamaConfig
+from transformers import LlamaModel, LlamaConfig, DynamicCache
 from transformers.generation.logits_process import TopPLogitsWarper, RepetitionPenaltyLogitsProcessor
 
 from .modules.learned_pos_emb import LearnedPositionEmbeddings
@@ -314,17 +314,26 @@ class T3(nn.Module):
         top_p_warper = TopPLogitsWarper(top_p=top_p)
         repetition_penalty_processor = RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty)
 
+        # past_key_values = StaticCache(
+        #     config=self.patched_model.config,
+        #     max_batch_size=1,
+        #     max_cache_len=max_new_tokens,
+        #     device=self.patched_model.device,
+        #     dtype=self.patched_model.dtype,
+        # )
+
         # ---- Initial Forward Pass (no kv_cache yet) ----
         output = self.patched_model(
             inputs_embeds=inputs_embeds,
             past_key_values=None,
             use_cache=True,
+            # output_attentions=True,
             output_attentions=False,
             output_hidden_states=True,
             return_dict=True,
         )
         # Initialize kv_cache with the full context.
-        past = output.past_key_values
+        past = DynamicCache.from_legacy_cache(output.past_key_values)
 
         # ---- Generation Loop using kv_cache ----
         for i in tqdm(range(max_new_tokens), desc="Sampling", dynamic_ncols=True):
@@ -353,6 +362,7 @@ class T3(nn.Module):
             predicted.append(next_token)
             generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
+
             # Check for EOS token.
             if next_token.view(-1) == self.hp.stop_speech_token:
                 break
@@ -369,6 +379,8 @@ class T3(nn.Module):
             output = self.patched_model(
                 inputs_embeds=next_token_embed,
                 past_key_values=past,
+                # output_attentions=True,
+                # Let's see
                 output_attentions=False,
                 output_hidden_states=True,
                 return_dict=True,
