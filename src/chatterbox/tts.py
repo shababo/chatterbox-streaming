@@ -288,32 +288,6 @@ class ChatterboxTTS:
 
                 return torch.from_numpy(watermarked_wav).unsqueeze(0), len(wav) + previous_length
 
-                tokens_to_seconds = int(288960 * stride / 300)
-                new_wav_stride = wav[-tokens_to_seconds:]
-                if previous_wav_stride is not None:
-                # if False:
-                    import numpy as np
-                    blended_tokens = min(tokens_to_seconds // 2, len(watermarked_wav), len(previous_wav_stride))
-
-                    fade_in = np.linspace(0, 1, blended_tokens, endpoint=False)
-                    fade_out = 1 - fade_in  # goes from 1 → 0
-
-                    # Get segments to blend
-                    prev_tail = previous_wav_stride[-blended_tokens:]
-                    curr_head = watermarked_wav[:blended_tokens]
-
-                    # Apply crossfade
-                    crossfaded = prev_tail * fade_out + curr_head * fade_in
-
-                    # Replace the start of current audio with the crossfade
-                    watermarked_wav = np.concatenate([
-                        crossfaded,
-                        watermarked_wav[blended_tokens:]
-                    ])
-                watermarked_wav = watermarked_wav[:-tokens_to_seconds]
-                print("watermarked_wav", watermarked_wav.shape)
-                return torch.from_numpy(watermarked_wav).unsqueeze(0), new_wav_stride
-            
             eos_token = torch.tensor([self.t3.hp.stop_text_token]).unsqueeze(0).to(self.device)
 
             def chunked():
