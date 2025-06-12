@@ -277,9 +277,6 @@ class ChatterboxTTS:
                 )
                 wav = wav.squeeze(0).detach().cpu().numpy()
 
-                if chunk_overlap_method == "full":
-                    wav = wav[previous_length:]
-                
                 watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
                 if remove_milliseconds > 0:
                     watermarked_wav = watermarked_wav[:-int(self.sr * remove_milliseconds / 1000)]
