@@ -217,7 +217,7 @@ class ChatterboxTTS:
         tokens_per_slice=1000,
         remove_milliseconds=45,
         remove_milliseconds_start=25,
-        chunk_overlap_method: Literal["zero", "full"] = "zero",
+        chunk_overlap_method: Literal["zero"] = "zero",
     ):
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
@@ -304,24 +304,11 @@ class ChatterboxTTS:
                 if token_stream:
                     yield token_stream
 
-            def accumulating_chunks():
-                """Yield accumulating slices of tokens, emitting every tokens_per_slice tokens."""
-                accumulated = []
-                
-                for batch in _t3_infer():
-                    accumulated.extend(batch.squeeze(0))
-                    
-                    # Yield whenever we have a multiple of tokens_per_slice tokens
-                    if len(accumulated) % tokens_per_slice == 0 and len(accumulated) > 0:
-                        yield accumulated.copy()
-                
-                # Yield any remaining tokens if not already yielded
-                if accumulated and len(accumulated) % tokens_per_slice != 0:
-                    yield accumulated.copy()
-
+            if chunk_overlap_method == "full":
+                print("Warning: full overlap has been removed, falling back to zero overlap.")
 
             previous_length = 0
-            iterator = chunked() if chunk_overlap_method == "zero" else accumulating_chunks()
+            iterator = chunked()
             for slice_tokens in iterator:
                 tokens = torch.stack(slice_tokens).unsqueeze(0)
                 tokens_with_eos = torch.cat([tokens, eos_token], dim=1)
