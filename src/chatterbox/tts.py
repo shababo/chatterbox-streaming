@@ -213,12 +213,18 @@ class ChatterboxTTS:
         exaggeration=0.5,
         cfg_weight=0.5,
         temperature=0.8,
-        # stream
-        tokens_per_slice=1000,
-        remove_milliseconds=45,
-        remove_milliseconds_start=25,
-        chunk_overlap_method: Literal["zero"] = "zero",
+        # stream - left for API compatibility
+        tokens_per_slice=None,
+        remove_milliseconds=None,
+        remove_milliseconds_start=None,
+        chunk_overlap_method=None,
+        # cache optimization params
+        max_new_tokens=1000, 
+        max_cache_len=1500, # Affects the T3 speed, hence important
     ):
+        if tokens_per_slice is not None or remove_milliseconds is not None or remove_milliseconds_start is not None or chunk_overlap_method is not None:
+            print("Streaming by token slices has been discontinued due to audio clipping. Continuing with full generation.")
+
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
         else:
@@ -246,68 +252,43 @@ class ChatterboxTTS:
         text_tokens = F.pad(text_tokens, (0, 1), value=eot)
 
         with torch.inference_mode():
+            speech_tokens = self.t3.inference(
+                t3_cond=self.conds.t3,
+                text_tokens=text_tokens,
+                max_new_tokens=max_new_tokens,  # TODO: use the value in config
+                temperature=temperature,
+                cfg_weight=cfg_weight,
+                max_cache_len=max_cache_len,
+            )
 
-            def _t3_infer():
-                for token in self.t3.inference(
-                    t3_cond=self.conds.t3,
-                    text_tokens=text_tokens,
-                    max_new_tokens=1000,  # TODO: use the value in config
-                    temperature=temperature,
-                    cfg_weight=cfg_weight,
-                ):
-                    yield token
             
-            def speech_to_wav(speech_tokens, previous_length=0):
+            def speech_to_wav(speech_tokens):
                 # Extract only the conditional batch.
                 speech_tokens = speech_tokens[0]
-
-                # speech_tokens = speech_tokens[-tokens_per_slice * 2:]
 
                 # TODO: output becomes 1D
                 speech_tokens = drop_invalid_tokens(speech_tokens)
                 
-                speech_tokens = speech_tokens[speech_tokens < 6561]
+                def drop_bad_tokens(tokens):
+                    # Use torch.where instead of boolean indexing to avoid sync
+                    mask = tokens < 6561
+                    # Count valid tokens without transferring to CPU
+                    valid_count = torch.sum(mask).item()
+                    # Create output tensor of the right size
+                    result = torch.zeros(valid_count, dtype=tokens.dtype, device=tokens.device)
+                    # Use torch.masked_select which is more CUDA-friendly
+                    result = torch.masked_select(tokens, mask)
+                    return result
 
-                speech_tokens = speech_tokens.to(self.device)
-
+                # speech_tokens = speech_tokens[speech_tokens < 6561]
+                speech_tokens = drop_bad_tokens(speech_tokens)
                 wav, _ = self.s3gen.inference(
                     speech_tokens=speech_tokens,
                     ref_dict=self.conds.gen,
-                    no_trim=tokens_per_slice < 1000,
                 )
                 wav = wav.squeeze(0).detach().cpu().numpy()
-
                 watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
-                if remove_milliseconds > 0:
-                    watermarked_wav = watermarked_wav[:-int(self.sr * remove_milliseconds / 1000)]
-                if remove_milliseconds_start > 0:
-                    watermarked_wav = watermarked_wav[int(self.sr * remove_milliseconds_start / 1000):]
+                return torch.from_numpy(watermarked_wav).unsqueeze(0)
 
-                return torch.from_numpy(watermarked_wav).unsqueeze(0), len(wav) + previous_length
+            yield speech_to_wav(speech_tokens)
 
-            eos_token = torch.tensor([self.t3.hp.stop_text_token]).unsqueeze(0).to(self.device)
-
-            def chunked():
-                """Yield successive chunks of tokens from the inference generator."""
-                token_stream = []
-                for batch in _t3_infer():
-                    token_stream.extend(batch.squeeze(0))
-                    
-                    while len(token_stream) >= tokens_per_slice:
-                        yield token_stream[:tokens_per_slice]
-                        token_stream = token_stream[tokens_per_slice:]
-                
-                # Yield any remaining tokens
-                if token_stream:
-                    yield token_stream
-
-            if chunk_overlap_method == "full":
-                print("Warning: full overlap has been removed, falling back to zero overlap.")
-
-            previous_length = 0
-            iterator = chunked()
-            for slice_tokens in iterator:
-                tokens = torch.stack(slice_tokens).unsqueeze(0)
-                tokens_with_eos = torch.cat([tokens, eos_token], dim=1)
-                wav, previous_length = speech_to_wav(tokens_with_eos, previous_length)
-                yield wav

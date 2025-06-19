@@ -110,6 +110,11 @@ class S3Token2Mel(torch.nn.Module):
     def device(self):
         params = self.tokenizer.parameters()
         return next(params).device
+    
+    @property
+    def dtype(self):
+        params = self.tokenizer.parameters()
+        return next(params).dtype
 
     def embed_ref(
         self,
