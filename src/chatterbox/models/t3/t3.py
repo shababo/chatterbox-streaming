@@ -231,11 +231,10 @@ class T3(nn.Module):
 
     def get_cache(self, config, max_batch_size, max_cache_len, device, dtype):
         if hasattr(self, 'backend_cache'):
-            if self.backend_cache.max_cache_len == max_cache_len and \
-                self.backend_cache.max_batch_size == max_batch_size and \
-                self.backend_cache.dtype == dtype:
-                # self.backend_cache.device == device and \
-                print("Reusing existing cache")
+            if self.backend_cache_params['max_batch_size'] == max_batch_size and \
+                self.backend_cache_params['max_cache_len'] == max_cache_len and \
+                self.backend_cache_params['dtype'] == dtype and \
+                self.backend_cache_params['device'] == device:
                 self.backend_cache.reset()
                 return self.backend_cache
             else:
@@ -248,6 +247,13 @@ class T3(nn.Module):
             device=device,
             dtype=dtype,
         )
+        # save parameters in t3 since huggingface fails deprecation standards.
+        self.backend_cache_params = {
+            'max_batch_size': max_batch_size,
+            'max_cache_len': max_cache_len,
+            'device': device,
+            'dtype': dtype,
+        }
         self.backend_cache = cache
         return cache
 
