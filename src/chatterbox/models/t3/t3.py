@@ -243,7 +243,7 @@ class T3(nn.Module):
 
         cache = StaticCache(
             config=config,
-            batch_size=max_batch_size,
+            max_batch_size=max_batch_size,
             max_cache_len=max_cache_len,
             device=device,
             dtype=dtype,
