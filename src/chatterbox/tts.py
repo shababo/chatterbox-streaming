@@ -420,7 +420,7 @@ class ChatterboxTTS:
         start_time,
         metrics,
         print_metrics,
-        fade_duration=0.02  # seconds to apply linear fade-in on each chunk
+        fade_duration=0.04  # seconds to apply linear fade-in on each chunk
     ):
         # Combine buffered chunks of tokens
         new_tokens = torch.cat(token_buffer, dim=-1)
@@ -440,6 +440,7 @@ class ChatterboxTTS:
 
         # Drop any invalid tokens and move to the correct device
         clean_tokens = drop_invalid_tokens(tokens_to_process).to(self.device)
+        clean_tokens = clean_tokens[clean_tokens < 6561]
         if len(clean_tokens) == 0:
             return None, 0.0, False
 
