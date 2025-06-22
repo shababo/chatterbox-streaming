@@ -122,11 +122,11 @@ class S3Token2Mel(torch.nn.Module):
         if isinstance(ref_wav, np.ndarray):
             ref_wav = torch.from_numpy(ref_wav).float()
 
-        # if ref_wav.device != device:
-        #     ref_wav = ref_wav.to(device)
-
         if len(ref_wav.shape) == 1:
             ref_wav = ref_wav.unsqueeze(0)  # (B, L)
+
+        if ref_wav.device != device:
+            ref_wav = ref_wav.to(device)
 
         if ref_wav.size(1) > 10 * ref_sr:
             print("WARNING: cosydec received ref longer than 10s")
